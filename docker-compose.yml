@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  nats:
+    image: nats:2.6-alpine
+    networks:
+      - node-network
+  
+  rocketchat:
+    image: registry.rocket.chat/rocketchat/rocket.chat:latest
+    restart: always
+    # scale: 3 # Adjust the number of instances based on your needs
+    environment:
+      MONGO_URL: "mongodb://mongodb:27017/rocketchat?replicaSet=rs0"
+      MONGO_OPLOG_URL: "mongodb://mongodb:27017/local?replicaSet=rs0"
+      ROOT_URL: "http://localhost:3000"
+      PORT: '3000'
+      ROOT_PATH: /app
+      VIRTUAL_HOST: "https://glpi.shuttlers.africa"
+      MAIL_URL: "smtp://smtp.gmail.com:25"
+      MAIL_FROM: "itplatforms@shuttlers.ng"
+      DEPLOY_METHOD: docker
+      BIND_IP: '127.0.0.1:3000'
+      PUBLIC_MEDIA_URL: "http://localhost:3000/uploads"  # Replace with your domain if using external storage
+      ENABLE_INVITES: true  # Enable user invitations (optional)
+      ENABLE_REGISTRATION: true  # Enable user registration (optional)
+      # DEPLOY_PLATFORM: ${DEPLOY_PLATFORM:-}
+      # REG_TOKEN: ${REG_TOKEN:-}
+      # ROOT_URL: "https://mydomain.com"
+    volumes:
+      - rocketchat-data:/app/data
+      - ./uploads:/app/uploads
+    depends_on:
+      - mongodb
+    expose:
+      - '3000'
+    ports:
+      - '127.0.0.1:3000:3000'
+    networks:
+      - node-network  
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3  
+
+  mongodb:
+    image: bitnami/mongodb:7.0.6
+    restart: always
+    command: 'mongosh --smallfiles --oplogSize 128 --replSet rs0 --noprealloc --wiredTigerCacheSizeGB=4'
+    volumes:
+      - mongodb_data:/bitnami/mongodb
+    environment:
+      MONGODB_REPLICA_SET_MODE: primary
+      MONGODB_REPLICA_SET_NAME: rs0
+      MONGODB_PORT_NUMBER: 27017
+      MONGODB_INITIAL_PRIMARY_HOST: mongodb
+      MONGODB_INITIAL_PRIMARY_PORT_NUMBER: 27017
+      MONGODB_ADVERTISED_HOSTNAME: mongodb
+      MONGODB_ENABLE_JOURNAL: true
+      ALLOW_EMPTY_PASSWORD: yes
+    ports:
+      - '127.0.0.1:27017:27017'
+    networks:
+      - node-network  
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mongo-init-replica:
+    image: bitnami/mongodb:7.0.6
+    command: 'mongo mongodb/rocketchat --eval "rs.initiate({ _id: ''rs0'', members: [ { _id: 0, host: ''mongodb:27017'' } ]})" --noprealloc --wiredTigerCacheSizeGB=4'
+    depends_on:
+      - mongodb
+
+  cadvisor:
+    container_name: cadvisor
+    image: gcr.io/cadvisor/cadvisor:latest
+    network_mode: "host"
+    ports:
+      - "8084:8080"
+    volumes: 
+      - "/:/rootfs"
+      - "/var/run:/var/run"
+      - "/sys:/sys"
+      - "/var/lib/docker/:/var/lib/docker"
+      - "/dev/disk/:/dev/disk"
+    privileged: true
+    devices: 
+      - "/dev/kmsg"
+
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    network_mode: "host"
+    ports:
+      - "9090:9090"
+    volumes: 
+      - "./prometheus.yml:/etc/prometheus/prometheus.yml"
+    privileged: true
+    depends_on:
+      - cadvisor
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:latest
+    network_mode: "host"
+    ports:
+      - "3002:3000"
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - DS_PROMETHEUS=prometheus
+    volumes: 
+      - "grafana-data:/var/lib/grafana"
+      - "./datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml"
+      - "./dashboard.json:/var/lib/grafana/dashboards/dashboard.json"
+      - "./default.yaml:/etc/grafana/provisioning/dashboards/default.yaml"
+    privileged: true
+    depends_on:
+      - prometheus 
+  
+  # Hubot for Automation and ChatOps
+  hubot:
+    image: rocketchat/hubot-rocketchat:latest
+    restart: always
+    environment:
+      - ROCKETCHAT_URL=wss://localhost:3000/websocket
+      - ROCKETCHAT_ROOM=general
+      - ROCKETCHAT_USER=hubot
+      - ROCKETCHAT_PASSWORD=hubot-password
+      - HUBOT_NAME=hubot
+      - HUBOT_OWNER=hubot-it
+      - EXTERNAL_SCRIPTS=hubot-help,hubot-seen,hubot-links
+    depends_on:
+      - rocketchat
+    networks:
+      - node-network
+
+volumes:
+  mongodb_data: { driver: local }
+  grafana-data:
+  rocketchat-data:
+
+networks:
+  node-network:
+    driver: bridge  
